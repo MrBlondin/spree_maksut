@@ -1,0 +1,135 @@
+<p data-hook="maksuturva_quick_checkout" style="display: none"></p>
+<script type="text/javascript">
+    $(document).ready(function () {
+        $("input[name=commit]").click(function () {
+            if ($("#form_maksuturva").is(':visible')) {
+                $('#form_maksuturva').submit();
+            }
+        });
+    });
+
+</script>
+<%
+   base = @order.number[1 .. -1]
+   @payment_method= Spree::PaymentMethod.where(type: Spree::BillingIntegration::Maksut::QuickCheckout).first
+   elements={pmt_action: 'NEW_PAYMENT_EXTENDED',
+             pmt_version: '0004',
+             pmt_sellerid: payment_method.preferred_seller_id, #'testikauppias'
+             pmt_selleriban: 'FI2712283000022671', #IBAN Andieva Oy
+             pmt_id: @order.number,
+             pmt_orderid: @order.number,
+             pmt_reference: open("http://www1.nordea.fi/P636V/H636VTXT.asp?action=tekstiLista&lkm=1&alkuViite=#{base}&L=1").read[/\d+ \d+/].gsub(" ", ""),
+             pmt_duedate: Time.new.strftime("%d.%m.%Y"),
+             pmt_amount: "0",
+             pmt_userlocale: I18n.locale.to_s+'_FI', #  'en_FI'
+             pmt_currency: 'EUR',
+             pmt_okreturn: maksut_return_order_checkout_url(@order, token: @order.token, payment_method_id: payment_method.id),
+             pmt_errorreturn: checkout_state_url(state: 'payment'),
+             pmt_cancelreturn: maksut_cancel_order_checkout_url(@order, :token => @order.token),
+             pmt_delayedpayreturn: checkout_state_url(state: 'payment'),
+             #pmt_estimateddaystodelivery: "3",
+             pmt_escrow: 'Y',
+             pmt_escrowchangeallowed: 'N',
+             pmt_invoicefromseller: 'N',
+             pmt_paymentmethod: 'FInn',
+             #pmt_buyeridentificationcode: '0000026-2',
+             pmt_buyername: @order.bill_address.firstname + " " + @order.bill_address.lastname,
+             pmt_buyeraddress: @order.bill_address.address1 + " " + @order.bill_address.address2,
+             pmt_buyerpostalcode: @order.bill_address.zipcode,
+             pmt_buyercity: @order.bill_address.city,
+             pmt_buyercountry: @order.bill_address.country.iso,
+             #pmt_buyerphone: '+358447022022',
+             pmt_buyeremail: @order.email,
+             pmt_deliveryname: "#{@order.ship_address.firstname} #{@order.ship_address.lastname}",
+             pmt_deliveryaddress: @order.ship_address.address1 + " " + @order.ship_address.address2,
+             pmt_deliverypostalcode: @order.ship_address.zipcode,
+             pmt_deliverycity: @order.ship_address.city,
+             pmt_deliverycountry: @order.ship_address.country.iso, #'FI',
+             pmt_sellercosts: '0',
+             #pmt_orderinformation: '111',
+             #pmt_rows: @order.line_items.count
+   }
+   n=0
+   pmt_sellercosts = 0
+   pmt_amount = @order.item_total
+   @order.line_items.each do |item|
+     n=n+1
+     elements["pmt_row_name#{n}"]= item.variant.product.name.gsub(/<\/?[^>]*>/, "")
+     elements["pmt_row_desc#{n}"]= (item.variant.product.description ? item.variant.product.description[0..120].gsub(/<\/?[^>]*>/, "") : '.')
+     elements["pmt_row_quantity#{n}"]= item.quantity
+     elements["pmt_row_articlenr#{n}"]= n
+     elements["pmt_row_unit#{n}"]= 'pcs'
+     elements["pmt_row_deliverydate#{n}"]= Time.new.strftime("%d.%m.%Y")
+     #elements["pmt_row_price_net#{n}"]= item.price.to_s.gsub('.', ',')
+     elements["pmt_row_price_gross#{n}"]= number_with_precision(item.price, precision: 2, separator: ',')
+     elements["pmt_row_vat#{n}"]= '0,14'
+     elements["pmt_row_discountpercentage#{n}"]= '0,00'
+     elements["pmt_row_type#{n}"]= '1'
+   end
+   ###Добавляем все добавочки
+   @order.adjustments.eligible.each do |adjustment|
+     next if (adjustment.originator_type == 'Spree::TaxRate') and (adjustment.amount == 0)
+     n=n+1
+     elements["pmt_row_name#{n}"]= adjustment.label
+     elements["pmt_row_desc#{n}"]= adjustment.label
+     elements["pmt_row_quantity#{n}"]= 1
+     elements["pmt_row_articlenr#{n}"]= n
+     elements["pmt_row_unit#{n}"]= 'pcs'
+     elements["pmt_row_deliverydate#{n}"]= Time.new.strftime("%d.%m.%Y")
+     #elements["pmt_row_price_net#{n}"]= item.price.to_s.gsub('.', ',')
+     elements["pmt_row_price_gross#{n}"]= number_with_precision(adjustment.amount, precision: 2, separator: ',')
+     elements["pmt_row_vat#{n}"]= '0,00'
+     elements["pmt_row_discountpercentage#{n}"]= '0,00'
+
+     if (adjustment.originator_type == 'Spree::ShippingMethod')
+       elements["pmt_row_type#{n}"]= 2
+       pmt_sellercosts += adjustment.amount
+     else
+       if (adjustment.originator_type == 'Spree::PromotionAction')
+         elements["pmt_row_type#{n}"]= 6
+         pmt_amount += adjustment.amount
+       else
+         elements["pmt_row_type#{n}"]= 1
+       end
+     end
+   end
+   ##The end of adjustment
+   elements[:pmt_sellercosts]= number_with_precision(pmt_sellercosts, precision: 2, separator: ',')
+   elements[:pmt_amount]= number_with_precision(pmt_amount, precision: 2, separator: ',')
+   elements[:pmt_rows]= n
+   elements[:pmt_charset]= 'UTF-8'
+   elements[:pmt_charsethttp]= 'UTF-8'
+   elements[:pmt_hashversion]= 'MD5'
+   elements[:pmt_keygeneration]= payment_method.preferred_key_generation #'001'
+   hash_elements = elements.clone
+   hash_elements.delete(:pmt_sellerid)
+   hash_elements.delete(:pmt_selleriban)
+   hash_elements.delete(:pmt_userlocale)
+   hash_elements.delete(:pmt_rows)
+   hash_elements.delete(:pmt_buyeremail)
+   hash_elements.delete(:pmt_charset)
+   hash_elements.delete(:pmt_charsethttp)
+   hash_elements.delete(:pmt_hashversion)
+   hash_elements.delete(:pmt_keygeneration)
+   hash_elements.delete(:pmt_paymentmethod)
+   #hash_elements['private']= @payment_method.preferred_private #'11223344556677889900'
+   #hash_elements['pmt_row_price_gross1']= '0.01'
+   @s=''
+   hash_elements.each do |key, val|
+     @s= @s+val.to_s+ '&'
+   end
+   @s= @s+payment_method.preferred_private+ '&'
+   elements['pmt_hash']= Digest::MD5.hexdigest(@s)
+   payment_method.preferred_test_mode = false  if payment_method.id == 931422126
+%>
+
+<form id="form_maksuturva1" action="<%= payment_method.preferred_test_mode ? 'http://test1' : 'https://www' %>.maksuturva.fi/NewPaymentExtended.pmt" method="post">
+
+</form>
+<form id="form_maksuturva" action="<%= payment_method.preferred_test_mode ? 'http://test1' : 'https://www' %>.maksuturva.fi/NewPaymentExtended.pmt" method="post">
+  <% elements.each do |key, val| %>
+      <%= text_field_tag(key, val, type: 'hidden') %>
+  <% end %>
+  <input id="submit_maksuturva" name="commit" type="image" src="/maksuturva_button.jpg" alt=<%= Spree.t('checkout') %>
+          value=<%= Spree.t('checkout') %>>
+</form>
